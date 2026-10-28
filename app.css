@@ -9,3 +9,31 @@
 @media(max-width:650px){.workspace{display:block;position:relative}.sidebar{position:absolute;inset:0;z-index:12}.sidebar.mobile-hidden{display:none}.editor{position:absolute;inset:0}.editor-bar{padding:8px 12px;flex-wrap:wrap}.mobile-back{display:inline-block;border:0;background:transparent;color:#236e78}.crumb{display:none}.editor-actions{margin-left:auto}.document{padding:16px}.title-input{font-size:25px}.metadata{gap:9px}.field.compact{width:100%}.markdown-preview{padding:16px}.create-grid{grid-template-columns:1fr}.topbar{padding:0 12px}}
 @media print{.topbar,.sidebar,.editor-bar,.modebar,.document-foot{display:none!important}.workspace,.editor,.document{display:block!important;overflow:visible!important;height:auto!important;max-width:none;padding:0!important}.markdown-layout{border:0;display:block!important}.markdown-layout textarea{display:none!important}.markdown-layout .markdown-preview{display:block!important;padding:0!important}}
 .repo-security-hint{font-size:12px;color:#667b87;line-height:1.55;margin:8px 0 16px}
+
+/* Let the editor use the available browser space; keep only the list compact. */
+.workspace{grid-template-columns:clamp(240px,19vw,300px) minmax(0,1fr)}
+.editor,.document{min-width:0}
+.editor-bar{padding-inline:clamp(18px,2.5vw,48px)}
+.document{width:100%;max-width:none;padding:clamp(20px,2vw,38px) clamp(18px,2.5vw,48px) 72px}
+.markdown-layout{min-height:max(500px,calc(100dvh - 285px))}
+.markdown-layout textarea{min-height:inherit}
+.markdown-preview{overflow-x:auto;overflow-y:visible;overflow-wrap:anywhere}
+.markdown-preview .katex-display{max-width:100%;overflow-x:auto;overflow-y:hidden}
+.markdown-preview img{max-width:100%;height:auto}
+.markdown-layout.drag-over{outline:2px dashed #2e8790;outline-offset:3px;background:#f1f9f9}
+.image-entry{display:flex;align-items:center;gap:10px;color:#8ca0aa;font-size:12px}
+@media(max-width:1150px){
+  .markdown-layout.split{grid-template-columns:1fr}
+  .markdown-layout.split textarea{min-height:260px;border-right:0;border-bottom:1px solid #e6ecef}
+  .markdown-layout.split .markdown-preview{min-height:320px}
+}
+@media(max-width:900px){
+  .workspace{grid-template-columns:240px minmax(0,1fr)}
+  .document{padding:24px 22px 64px}
+  .image-entry span{display:none}
+}
+@media(max-width:650px){
+  .workspace{display:block}
+  .document{padding:16px}
+  .editor-bar{padding:8px 12px}
+}

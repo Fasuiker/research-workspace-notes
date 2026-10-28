@@ -188,11 +188,36 @@ function renderList() {
   });
 }
 
-function markdownHtml(content) {
+function markdownFragment(content) {
   const normalized = String(content || '').replace(/(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g,
     (whole, prefix, body) => /\\[A-Za-z]+|[_^]\s*(?:\{|[A-Za-z0-9])/.test(body) ? `${prefix}$$\n${body.trim()}\n$$` : whole);
-  const html = marked.parse(normalized, { gfm:true, breaks:false });
-  return DOMPurify.sanitize(html, { USE_PROFILES:{ html:true } });
+  // Keep TeX intact until after Markdown parsing: e.g. '*' inside $$...$$ is not emphasis.
+  const formulas = [];
+  const marker = `ZXQMATH${Math.random().toString(36).slice(2).toUpperCase()}X`;
+  const protectedText = normalized.replace(/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$[^\n$]+\$/g,
+    formula => `${marker}${formulas.push(formula) - 1}Z`);
+  const fragment = document.createElement('div');
+  fragment.innerHTML = DOMPurify.sanitize(marked.parse(protectedText, { gfm:true, breaks:false }),
+    { USE_PROFILES:{ html:true } });
+  if (formulas.length) {
+    const token = new RegExp(`${marker}(\\d+)Z`, 'g');
+    const walker = document.createTreeWalker(fragment, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) if (walker.currentNode.textContent.includes(marker)) nodes.push(walker.currentNode);
+    nodes.forEach(node => {
+      const value = node.textContent;
+      const replacement = document.createDocumentFragment();
+      let start = 0;
+      for (const match of value.matchAll(token)) {
+        replacement.append(document.createTextNode(value.slice(start, match.index)));
+        replacement.append(document.createTextNode(formulas[Number(match[1])]));
+        start = match.index + match[0].length;
+      }
+      replacement.append(document.createTextNode(value.slice(start)));
+      node.replaceWith(replacement);
+    });
+  }
+  return fragment;
 }
 
 function imageMatches(text) {
@@ -255,13 +280,13 @@ async function refreshPreview() {
   if (viewMode === 'source') return;
   if (window.gitNoteBackend) {
     const staging=document.createElement('div');
-    staging.innerHTML=markdownHtml(draft.body);
+    staging.replaceChildren(...markdownFragment(draft.body).childNodes);
     staging.querySelectorAll('img[src^="/api/note-assets/"]').forEach(image=>{
       image.dataset.noteAsset=image.getAttribute('src').split('/').pop();
       image.src='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
     });
     preview.replaceChildren(...staging.childNodes);
-  } else preview.innerHTML = markdownHtml(draft.body);
+  } else preview.replaceChildren(...markdownFragment(draft.body).childNodes);
   if (window.gitNoteBackend) window.gitNoteBackend.resolveImages(preview).catch(error=>console.warn('Note image:',error));
   preview.querySelectorAll('img').forEach((image,index)=>{
     image.tabIndex=0; image.setAttribute('role','button'); image.title='点击调整大小与对齐';
@@ -310,15 +335,31 @@ function renderEditor() {
     <div class="document"><input id="title" class="title-input" placeholder="标题" value="${escapeHtml(draft.title)}" ${editableTitle?'':'readonly'}>
       <div class="metadata">${metaControls(draft)}${!['paper','inbox','project'].includes(draft.kind) ? `<label class="field compact">标签<input id="tags" value="${escapeHtml(draft.tags)}" placeholder="用逗号分隔"></label>` : ''}</div>
       <div class="modebar"><div class="segment">${['source','split','preview'].map((mode,i)=>`<button data-mode="${mode}" class="${viewMode===mode?'active':''}">${['源码','分栏','预览'][i]}</button>`).join('')}</div>
-        <div><label class="upload-button">插入图片<input type="file" id="image-file" accept="image/png,image/jpeg,image/gif,image/webp" hidden></label></div></div>
+        <div class="image-entry"><span>可拖入或粘贴图片</span><label class="upload-button">插入图片<input type="file" id="image-file" accept="image/png,image/jpeg,image/gif,image/webp" hidden></label></div></div>
       <div class="markdown-layout ${viewMode}"><textarea id="markdown-source" spellcheck="false" placeholder="用 Markdown 记录你的想法…"></textarea><article class="markdown-preview" id="markdown-preview"></article></div>
       <div class="document-foot">Markdown · Ctrl+S 保存 · 可粘贴图片</div></div>`;
   const source = document.getElementById('markdown-source');
   source.value = draft.body || '';
   source.oninput = () => { draft.body=source.value; setDirty(); clearTimeout(previewTimer); previewTimer=setTimeout(refreshPreview,220); };
-  source.onpaste = async event => {
+  const layout = document.querySelector('.markdown-layout');
+  layout.onpaste = async event => {
     const file = Array.from(event.clipboardData?.files || []).find(x => x.type.startsWith('image/'));
     if (file) { event.preventDefault(); await uploadImage(file); }
+  };
+  layout.ondragover = event => {
+    if (Array.from(event.dataTransfer?.items || []).some(item => item.kind === 'file')) {
+      event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; layout.classList.add('drag-over');
+    }
+  };
+  layout.ondragleave = event => { if (!layout.contains(event.relatedTarget)) layout.classList.remove('drag-over'); };
+  layout.ondrop = async event => {
+    layout.classList.remove('drag-over');
+    const files = Array.from(event.dataTransfer?.files || []);
+    if (!files.length) return;
+    event.preventDefault();
+    const file = files.find(x => x.type.startsWith('image/'));
+    if (file) await uploadImage(file);
+    else toast('请拖入 PNG、JPEG、GIF 或 WebP 图片',true);
   };
   document.getElementById('title').oninput = event => { draft.title=event.target.value; setDirty(); };
   document.getElementById('tags')?.addEventListener('input', event => { draft.tags=event.target.value; setDirty(); });
@@ -443,12 +484,14 @@ async function uploadImage(file) {
     const form=new FormData(); form.append('file',file);
     const asset=await api('/note-assets',{method:'POST',body:form});
     const source=document.getElementById('markdown-source');
-    const start=source.selectionStart, end=source.selectionEnd;
+    const start=viewMode==='preview' ? source.value.length : source.selectionStart;
+    const end=viewMode==='preview' ? start : source.selectionEnd;
     const markdown=`![${file.name.replace(/[\[\]]/g,'')}](${asset.url})`;
     const before=source.value.slice(0,start), after=source.value.slice(end);
     const insertion=`${before && !before.endsWith('\n\n') ? before.endsWith('\n') ? '\n' : '\n\n' : ''}${markdown}${after && !after.startsWith('\n\n') ? after.startsWith('\n') ? '\n' : '\n\n' : ''}`;
     source.value=before+insertion+after;
-    source.focus(); source.selectionStart=source.selectionEnd=start+insertion.length;
+    if (viewMode!=='preview') source.focus();
+    source.selectionStart=source.selectionEnd=start+insertion.length;
     draft.body=source.value; setDirty(); refreshPreview();
   } catch(error) { toast(`图片上传失败：${error.message}`,true); }
 }
