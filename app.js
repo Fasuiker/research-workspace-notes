@@ -188,9 +188,35 @@ function renderList() {
   });
 }
 
+function normalizeImplicitInlineMath(source) {
+  const protectedSegment = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`|\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$(?!\s)[^\n$]*?\S\$)/g;
+  return String(source || '').split(protectedSegment).map((part, index) => {
+    if (index % 2) return part;
+    let result = '';
+    for (let i = 0; i < part.length; i += 1) {
+      if (part[i] !== '(' || part[i - 1] === ']' || part[i - 1] === '\\') {
+        result += part[i];
+        continue;
+      }
+      let depth = 1;
+      let end = i + 1;
+      for (; end < part.length && depth && part[end] !== '\n'; end += 1) {
+        if (part[end] === '(') depth += 1;
+        else if (part[end] === ')') depth -= 1;
+      }
+      const expression = depth ? '' : part.slice(i + 1, end - 1);
+      if (/(?:\\[A-Za-z]+|[_^]\s*(?:\{[^}]+\}|\d))/.test(expression)) {
+        result += `\\(${part.slice(i, end)}\\)`;
+        i = end - 1;
+      } else result += part[i];
+    }
+    return result;
+  }).join('');
+}
+
 function markdownFragment(content) {
-  const normalized = String(content || '').replace(/(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g,
-    (whole, prefix, body) => /\\[A-Za-z]+|[_^]\s*(?:\{|[A-Za-z0-9])/.test(body) ? `${prefix}$$\n${body.trim()}\n$$` : whole);
+  const normalized = normalizeImplicitInlineMath(String(content || '').replace(/(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g,
+    (whole, prefix, body) => /\\[A-Za-z]+|[_^]\s*(?:\{|[A-Za-z0-9])/.test(body) ? `${prefix}$$\n${body.trim()}\n$$` : whole));
   // Keep TeX intact until after Markdown parsing: e.g. '*' inside $$...$$ is not emphasis.
   const formulas = [];
   const marker = `ZXQMATH${Math.random().toString(36).slice(2).toUpperCase()}X`;
