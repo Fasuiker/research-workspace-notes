@@ -6,6 +6,8 @@
   const KINDS = new Set(['general','project','paper','idea','inbox']);
   const imageCache = new Map();
   let account = null;
+  let repositoryVerified = false;
+  let indexCache = null;
   try { account = JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch { account = null; }
 
   function failure(message, status = 400, current = null) {
@@ -67,26 +69,32 @@
   function emptyIndex() { return {schema:1,seq:0,items:{},changes:[],contexts:{project:[],paper:[]},assets:{}}; }
   async function getIndex() {
     const file=await getFile(INDEX,true);
-    if (!file) return {data:emptyIndex(),sha:null};
+    if (!file) { const data=emptyIndex(); indexCache=data; return {data,sha:null}; }
     let data;
     try { data=JSON.parse(new TextDecoder().decode(file.bytes)); } catch { throw failure('私有仓库的札记索引不是有效 JSON'); }
     if (data.schema!==1 || !data.items || !Array.isArray(data.changes)) throw failure('私有仓库的札记索引格式不兼容');
     data.contexts ||= {project:[],paper:[]}; data.assets ||= {};
+    indexCache=data;
     return {data,sha:file.sha};
   }
   async function putIndex(data, sha, message) {
     const bytes=new TextEncoder().encode(JSON.stringify(data));
     if (bytes.length>8*1024*1024) throw failure('札记索引超过 8 MB，已停止写入');
     await putFile(INDEX,bytes,sha,message);
+    indexCache=data;
   }
   async function verify() {
-    const repo=await remote('GET','');
-    if (repo.private!==true) throw failure('只允许连接私有仓库，请先将 Gitee 仓库设为私有');
-    if (!/^[\w.-]+$/.test(repo.default_branch||'')) throw failure('默认分支名称不受支持');
-    account.branch=repo.default_branch;
-    await getIndex();
+    if (!repositoryVerified) {
+      const repo=await remote('GET','');
+      if (repo.private!==true) throw failure('只允许连接私有仓库，请先将 Gitee 仓库设为私有');
+      if (!/^[\w.-]+$/.test(repo.default_branch||'')) throw failure('默认分支名称不受支持');
+      account.branch=repo.default_branch;
+      repositoryVerified=true;
+    }
+    const {data}=await getIndex();
     sessionStorage.setItem(KEY,JSON.stringify(account));
-    return {ok:true,mode:'gitee'};
+    return {ok:true,mode:'gitee',items:Object.values(data.items).filter(item=>!item.deleted)
+      .sort((a,b)=>b.updated_at-a.updated_at),contexts:data.contexts};
   }
   function assetPath(id) {
     if (!/^[a-f0-9]{8}-[a-f0-9-]{27}$/i.test(id)) throw failure('无效图片 ID');
@@ -122,7 +130,7 @@
   async function resolveImages(root) {
     const images=[...root.querySelectorAll('img[data-note-asset]')];
     if (!images.length) return;
-    const {data}=await getIndex();
+    const data=indexCache || (await getIndex()).data;
     await Promise.all(images.map(async image=>{
       const id=image.dataset.noteAsset;
       const asset=data.assets[id];
@@ -145,11 +153,13 @@
       const repo=parseRepo(input.repo);
       if (!input.token || /\s/.test(input.token)) throw failure('请输入 Gitee 私人访问令牌');
       account={...repo,token:input.token.trim()};
+      repositoryVerified=false; indexCache=null;
       try { return await verify(); }
-      catch(error) { account=null; sessionStorage.removeItem(KEY); throw error; }
+      catch(error) { account=null; repositoryVerified=false; indexCache=null; sessionStorage.removeItem(KEY); throw error; }
     }
-    if (path==='/auth/logout') { account=null;sessionStorage.removeItem(KEY);imageCache.forEach(URL.revokeObjectURL);imageCache.clear();return {ok:true}; }
+    if (path==='/auth/logout') { account=null;repositoryVerified=false;indexCache=null;sessionStorage.removeItem(KEY);imageCache.forEach(URL.revokeObjectURL);imageCache.clear();return {ok:true}; }
     if (path==='/auth/me') return verify();
+    if (path==='/snapshot') return verify();
     if (path==='/items') {
       const {data}=await getIndex();
       return Object.values(data.items).filter(item=>!item.deleted).sort((a,b)=>b.updated_at-a.updated_at);

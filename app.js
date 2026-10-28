@@ -1,4 +1,41 @@
-const { marked, DOMPurify, renderMathInElement, mermaid } = window;
+const { marked, DOMPurify } = window;
+
+const vendorBase = window.gitNoteBackend ? './vendor/' : '/static/vendor/';
+const vendorLoads = new Map();
+let mathReady = null;
+let mermaidReady = null;
+let previewVersion = 0;
+
+function loadVendor(path, type = 'script') {
+  const key = `${type}:${path}`;
+  if (vendorLoads.has(key)) return vendorLoads.get(key);
+  const promise = new Promise((resolve, reject) => {
+    const node = document.createElement(type === 'style' ? 'link' : 'script');
+    if (type === 'style') { node.rel = 'stylesheet'; node.href = vendorBase + path; }
+    else node.src = vendorBase + path;
+    node.onload = resolve;
+    node.onerror = () => { node.remove(); reject(new Error(`无法加载 ${path}`)); };
+    document.head.append(node);
+  }).catch(error => { vendorLoads.delete(key); throw error; });
+  vendorLoads.set(key, promise);
+  return promise;
+}
+
+function ensureMath() {
+  if (!mathReady) mathReady = Promise.all([
+    loadVendor('katex/katex.min.css', 'style'), loadVendor('katex/katex.min.js')
+  ]).then(() => loadVendor('katex/contrib/auto-render.min.js'))
+    .catch(error => { mathReady = null; throw error; });
+  return mathReady;
+}
+
+function ensureMermaid() {
+  if (!mermaidReady) mermaidReady = loadVendor('mermaid.min.js').then(() => {
+    window.mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme:'neutral'});
+    return window.mermaid;
+  }).catch(error => { mermaidReady = null; throw error; });
+  return mermaidReady;
+}
 
 let csrf = '';
 let items = [];
@@ -59,9 +96,9 @@ function loginView() {
     document.getElementById('login-form').onsubmit = async event => {
       event.preventDefault();
       try {
-        await api('/auth/login',{method:'POST',body:JSON.stringify({repo:document.getElementById('repo-url').value,
+        const snapshot = await api('/auth/login',{method:'POST',body:JSON.stringify({repo:document.getElementById('repo-url').value,
           token:document.getElementById('repo-token').value})});
-        await load();
+        await load(snapshot);
       } catch(error) { document.getElementById('login-error').textContent=error.message; }
     };
     return;
@@ -214,6 +251,8 @@ function openImageTools(image, index) {
 async function refreshPreview() {
   const preview = document.getElementById('markdown-preview');
   if (!preview || !draft) return;
+  const version = ++previewVersion;
+  if (viewMode === 'source') return;
   if (window.gitNoteBackend) {
     const staging=document.createElement('div');
     staging.innerHTML=markdownHtml(draft.body);
@@ -224,21 +263,26 @@ async function refreshPreview() {
     preview.replaceChildren(...staging.childNodes);
   } else preview.innerHTML = markdownHtml(draft.body);
   if (window.gitNoteBackend) window.gitNoteBackend.resolveImages(preview).catch(error=>console.warn('Note image:',error));
-  renderMathInElement(preview, { delimiters:[
-    {left:'$$',right:'$$',display:true}, {left:'\\[',right:'\\]',display:true},
-    {left:'$',right:'$',display:false}, {left:'\\(',right:'\\)',display:false}
-  ], throwOnError:false });
   preview.querySelectorAll('img').forEach((image,index)=>{
     image.tabIndex=0; image.setAttribute('role','button'); image.title='点击调整大小与对齐';
     image.onclick=()=>openImageTools(image,index);
     image.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openImageTools(image,index);}};
   });
   const diagrams = Array.from(preview.querySelectorAll('pre code.language-mermaid'));
-  diagrams.forEach(code => { const div=document.createElement('div'); div.className='mermaid'; div.textContent=code.textContent; code.parentElement.replaceWith(div); });
-  if (diagrams.length) {
-    try { await mermaid.run({ nodes:preview.querySelectorAll('.mermaid') }); }
-    catch (error) { console.warn('Mermaid diagram:', error); }
-  }
+  const current = () => version === previewVersion && document.getElementById('markdown-preview') === preview;
+  const jobs = [];
+  if (/\$|\\\[|\\\(/.test(preview.textContent)) jobs.push(ensureMath().then(() => {
+    if (current()) window.renderMathInElement(preview, { delimiters:[
+      {left:'$$',right:'$$',display:true}, {left:'\\[',right:'\\]',display:true},
+      {left:'$',right:'$',display:false}, {left:'\\(',right:'\\)',display:false}
+    ], throwOnError:false });
+  }).catch(error => console.warn('Math rendering:', error)));
+  if (diagrams.length) jobs.push(ensureMermaid().then(async mermaid => {
+    if (!current()) return;
+    diagrams.forEach(code => { const div=document.createElement('div'); div.className='mermaid'; div.textContent=code.textContent; code.parentElement.replaceWith(div); });
+    await mermaid.run({ nodes:preview.querySelectorAll('.mermaid') });
+  }).catch(error => console.warn('Mermaid diagram:', error)));
+  await Promise.all(jobs);
 }
 
 function metaControls(item) {
@@ -432,8 +476,12 @@ async function deviceDialog() {
   refresh().catch(error=>toast(error.message,true));
 }
 
-async function load() {
-  const [me, list, availableContexts]=await Promise.all([api('/auth/me'),api('/items'),api('/contexts')]);
+async function load(snapshot = null) {
+  let me, list, availableContexts;
+  if (window.gitNoteBackend) {
+    const data = snapshot || await api('/snapshot');
+    me = data; list = data.items; availableContexts = data.contexts;
+  } else [me, list, availableContexts]=await Promise.all([api('/auth/me'),api('/items'),api('/contexts')]);
   csrf=me.csrf||csrf; items=list; contexts=availableContexts;
   if (selected) draft=structuredClone(items.find(x=>x.id===selected)||null);
   dirty=false; renderShell();
@@ -442,7 +490,7 @@ async function load() {
 async function pollRepository() {
   if (!window.gitNoteBackend || dirty || savePromise || !document.querySelector('.shell')) return;
   try {
-    const [fresh, newContexts]=await Promise.all([api('/items'),api('/contexts')]);
+    const {items:fresh, contexts:newContexts}=await api('/snapshot');
     const current=fresh.find(x=>x.id===selected);
     const changed=!!draft && (!current || current.revision!==draft.revision);
     items=fresh;contexts=newContexts;
@@ -456,8 +504,8 @@ document.addEventListener('keydown', event=>{
 });
 window.addEventListener('beforeunload', event=>{ if(dirty){event.preventDefault();event.returnValue='';} });
 marked.setOptions({ gfm:true, breaks:false });
-mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme:'neutral'});
-api('/auth/me').then(result=>{csrf=result.csrf||'';return load();}).catch(()=>loginView());
+if (window.gitNoteBackend) load().catch(()=>loginView());
+else api('/auth/me').then(result=>{csrf=result.csrf||'';return load();}).catch(()=>loginView());
 if (window.gitNoteBackend) {
   setInterval(pollRepository,60_000);
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)pollRepository();});
