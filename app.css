@@ -22,7 +22,7 @@
 .markdown-preview img{max-width:100%;height:auto}
 .markdown-layout.drag-over{outline:2px dashed #2e8790;outline-offset:3px;background:#f1f9f9}
 .image-entry{display:flex;align-items:center;gap:10px;color:#8ca0aa;font-size:12px}
-@media(max-width:1150px){
+@media(max-width:900px){
   .markdown-layout.split{grid-template-columns:1fr}
   .markdown-layout.split textarea{min-height:260px;border-right:0;border-bottom:1px solid #e6ecef}
   .markdown-layout.split .markdown-preview{min-height:320px}
@@ -37,3 +37,24 @@
   .document{padding:16px}
   .editor-bar{padding:8px 12px}
 }
+
+.sidebar-list-pane{display:flex;flex:1;flex-direction:column;min-height:0}
+.sidebar-list-pane[hidden],.outline-list[hidden]{display:none!important}
+.sidebar-switch{display:flex;gap:3px;margin:0 16px 14px;padding:3px;background:#eaf2f4;border-radius:10px}
+.sidebar-switch button{flex:1;min-width:0;border:0;border-radius:7px;background:transparent;color:#718893;font-size:12px;font-weight:600;padding:8px 6px;cursor:pointer}
+.sidebar-switch button:hover{color:#1b6e78}
+.sidebar-switch button.active{background:#fff;color:#176a75;box-shadow:0 1px 5px #173d4816}
+.outline-list{flex:1;min-height:0;overflow:auto;padding:1px 13px 24px}
+.outline-item{display:flex;align-items:flex-start;gap:10px;width:100%;border:0;border-radius:8px;background:transparent;color:#536e7a;text-align:left;line-height:1.4;font-size:13px;padding:9px 10px;cursor:pointer}
+.outline-item:hover,.outline-item:focus-visible{background:#e8f2f4;color:#165f6d;outline:0}
+.outline-item[data-depth="1"]{color:#24414e;font-weight:700}
+.outline-item[data-depth="2"]{padding-left:23px}
+.outline-item[data-depth="3"]{padding-left:36px}
+.outline-item:is([data-depth="4"],[data-depth="5"],[data-depth="6"]){padding-left:48px;font-size:12px}
+.outline-mark{flex:none;width:5px;height:5px;margin-top:7px;border-radius:50%;background:#a7c4ca}
+.outline-item[data-depth="1"] .outline-mark{width:7px;height:7px;margin-top:6px;background:#3c929c}
+.outline-title{min-width:0;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}
+.outline-empty{padding:24px 16px;color:#91a3ac;font-size:12px;line-height:1.7}
+.markdown-preview [data-outline-index]{scroll-margin-top:84px}
+.markdown-layout.split .markdown-preview{cursor:text}
+@media(max-width:650px){.editor-bar .mobile-back{padding:7px 5px;font-size:12px}}

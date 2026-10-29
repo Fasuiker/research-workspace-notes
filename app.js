@@ -44,8 +44,9 @@ let selected = null;
 let draft = null;
 let tab = 'all';
 let search = '';
-let viewMode = 'preview';
+let viewMode = 'split';
 let focusMode = false;
+let sidebarMode = 'list';
 let saveTimer = null;
 let previewTimer = null;
 let dirty = false;
@@ -152,11 +153,14 @@ function renderShell() {
     <header class="topbar"><div class="brand"><div class="brand-mark">札</div><div><strong>在线札记</strong><small>Research Workspace</small></div></div>
       <div class="top-actions"><span id="save-state" class="save-state">已同步</span><button class="icon-btn" id="refresh-btn" title="刷新">↻</button>${window.gitNoteBackend?'':'<button class="icon-btn" id="devices-btn" title="设备连接">⌘</button>'}<button class="icon-btn" id="logout-btn" title="退出">⇥</button></div></header>
     <div class="workspace ${focusMode?'focus-editor':''}"><aside class="sidebar"><div class="sidebar-head"><h2>我的札记</h2><button class="primary small" id="new-btn">＋ 新建</button></div>
-      <div class="search-wrap"><input id="search" type="search" placeholder="搜索笔记、想法…" value="${escapeHtml(search)}"></div>
+      <div class="sidebar-switch" role="group" aria-label="左侧导航"><button type="button" data-sidebar-mode="list">札记列表</button><button type="button" data-sidebar-mode="outline">本文目录</button></div>
+      <div class="sidebar-list-pane" id="sidebar-list-pane"><div class="search-wrap"><input id="search" type="search" placeholder="搜索笔记、想法…" value="${escapeHtml(search)}"></div>
       <nav class="tabs">${Object.entries(labels).map(([key,label]) => `<button class="tab ${key === tab ? 'active' : ''}" data-tab="${key}">${label}</button>`).join('')}</nav>
-      <div class="note-list" id="note-list">${listHtml()}</div></aside>
+      <div class="note-list" id="note-list">${listHtml()}</div></div>
+      <nav class="outline-list" id="outline-list" aria-label="当前笔记目录" hidden></nav></aside>
       <main class="editor" id="editor"></main></div></div>`;
   app.querySelectorAll('[data-tab]').forEach(button => button.onclick = () => { tab = button.dataset.tab; renderTabsAndList(); });
+  app.querySelectorAll('[data-sidebar-mode]').forEach(button => button.onclick = () => { sidebarMode = button.dataset.sidebarMode; renderSidebarMode(); });
   document.getElementById('search').oninput = event => { search = event.target.value; renderList(); };
   document.getElementById('new-btn').onclick = newMenu;
   document.getElementById('refresh-btn').onclick = async () => { if (dirty) await save(); await load(); toast('已刷新'); };
@@ -164,6 +168,17 @@ function renderShell() {
   document.getElementById('logout-btn').onclick = async () => { await api('/auth/logout',{method:'POST'}); csrf=''; selected=null; draft=null; loginView(); };
   renderList();
   renderEditor();
+  renderSidebarMode();
+}
+
+function renderSidebarMode() {
+  document.getElementById('sidebar-list-pane')?.toggleAttribute('hidden', sidebarMode !== 'list');
+  document.getElementById('outline-list')?.toggleAttribute('hidden', sidebarMode !== 'outline');
+  document.querySelectorAll('[data-sidebar-mode]').forEach(button => {
+    const active = button.dataset.sidebarMode === sidebarMode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
 }
 
 function renderTabsAndList() {
@@ -181,11 +196,123 @@ function renderList() {
     if (dirty && !(await save())) return;
     selected = button.dataset.id;
     draft = structuredClone(items.find(x => x.id === selected));
-    viewMode = 'preview';
+    viewMode = 'split';
     dirty = false;
     renderList(); renderEditor();
     document.querySelector('.sidebar')?.classList.add('mobile-hidden');
   });
+}
+
+function markdownSourceBlocks(source) {
+  let cursor = 0;
+  return marked.lexer(source || '').map(token => {
+    const raw = token.raw || '';
+    const found = raw ? source.indexOf(raw, cursor) : -1;
+    const start = found >= 0 ? found : cursor;
+    cursor = start + raw.length;
+    return { token, start, end: cursor };
+  }).filter(block => block.token.type !== 'space');
+}
+
+function outlineEntries(source) {
+  return markdownSourceBlocks(source).filter(block => block.token.type === 'heading').map(block => {
+    const plain = document.createElement('span');
+    plain.innerHTML = DOMPurify.sanitize(marked.parseInline(block.token.text || ''));
+    return { ...block, depth: block.token.depth, title: plain.textContent.trim() || '未命名标题' };
+  });
+}
+
+function scrollSourceTo(offset, length = 0, focus = false) {
+  const source = document.getElementById('markdown-source');
+  if (!source) return;
+  const position = Math.max(0, Math.min(source.value.length, offset));
+  if (focus) source.focus({ preventScroll: true });
+  source.setSelectionRange(position, Math.min(source.value.length, position + length));
+  const line = source.value.slice(0, position).split('\n').length - 1;
+  const lineHeight = parseFloat(getComputedStyle(source).lineHeight) || 24;
+  source.scrollTop = Math.max(0, line * lineHeight - source.clientHeight * .32);
+}
+
+function renderOutline() {
+  const list = document.getElementById('outline-list');
+  if (!list) return;
+  const entries = draft ? outlineEntries(draft.body || '') : [];
+  list.innerHTML = entries.length ? entries.map((entry, index) =>
+    `<button type="button" class="outline-item" data-outline-index="${index}" data-depth="${entry.depth}" title="${escapeHtml(entry.title)}"><span class="outline-mark"></span><span class="outline-title">${escapeHtml(entry.title)}</span></button>`).join('') :
+    `<div class="outline-empty">${draft ? '这篇札记还没有标题。可用 #、## 添加章节。' : '打开一篇札记后，这里会显示章节目录。'}</div>`;
+  list.querySelectorAll('[data-outline-index]').forEach(button => button.onclick = () => {
+    const index = Number(button.dataset.outlineIndex);
+    const entry = entries[index];
+    if (!entry) return;
+    const heading = document.querySelector(`#markdown-preview [data-outline-index="${index}"]`);
+    heading?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (viewMode !== 'preview') scrollSourceTo(entry.start);
+    if (matchMedia('(max-width: 650px)').matches) document.querySelector('.sidebar')?.classList.add('mobile-hidden');
+  });
+}
+
+function mapPreviewSource(preview, source) {
+  const blocks = markdownSourceBlocks(source);
+  const children = Array.from(preview.children);
+  let childIndex = 0;
+  const tags = { paragraph: /^P$/, code: /^PRE$/, table: /^TABLE$/, blockquote: /^BLOCKQUOTE$/, list: /^(UL|OL)$/, hr: /^HR$/ };
+  for (const block of blocks) {
+    if (block.token.type === 'heading') {
+      while (childIndex < children.length && !/^H[1-6]$/.test(children[childIndex].tagName)) childIndex += 1;
+      if (childIndex < children.length) childIndex += 1;
+      continue;
+    }
+    const expected = tags[block.token.type];
+    if (!expected) continue;
+    const match = children.findIndex((element, index) => index >= childIndex && index < childIndex + 3 && expected.test(element.tagName));
+    if (match < 0) continue;
+    const element = children[match];
+    childIndex = match + 1;
+    element.dataset.sourceStart = String(block.start);
+    element.dataset.sourceEnd = String(block.end);
+  }
+  const headings = Array.from(preview.children).filter(element => /^H[1-6]$/.test(element.tagName));
+  blocks.filter(block => block.token.type === 'heading').forEach((block, index) => {
+    const element = headings[index];
+    if (!element) return;
+    element.dataset.sourceStart = String(block.start);
+    element.dataset.sourceEnd = String(block.end);
+    element.dataset.outlineIndex = String(index);
+  });
+}
+
+function jumpFromPreview(event) {
+  if (viewMode !== 'split' || event.target.closest('a, button, img, .image-tools')) return;
+  const preview = document.getElementById('markdown-preview');
+  const block = event.target.closest('[data-source-start]');
+  if (!preview?.contains(block)) return;
+  const start = Number(block.dataset.sourceStart);
+  const end = Number(block.dataset.sourceEnd);
+  const raw = (draft?.body || '').slice(start, end);
+  const selection = window.getSelection();
+  let visibleOffset = 0;
+  if (selection?.rangeCount && block.contains(selection.getRangeAt(0).startContainer)) {
+    const range = document.createRange();
+    range.selectNodeContents(block);
+    range.setEnd(selection.getRangeAt(0).startContainer, selection.getRangeAt(0).startOffset);
+    visibleOffset = range.toString().length;
+  }
+  const estimated = start + Math.round(visibleOffset / Math.max(1, block.textContent.length) * raw.length);
+  const needle = selection?.toString().trim().slice(0, 80) || '';
+  let position = estimated;
+  let length = 0;
+  if (needle && !needle.includes('\n')) {
+    const lower = raw.toLocaleLowerCase();
+    const term = needle.toLocaleLowerCase();
+    let found = lower.indexOf(term);
+    let distance = Infinity;
+    while (found >= 0) {
+      const candidate = start + found;
+      if (Math.abs(candidate - estimated) < distance) { position = candidate; length = needle.length; distance = Math.abs(candidate - estimated); }
+      found = lower.indexOf(term, found + 1);
+    }
+  }
+  scrollSourceTo(position, length, true);
 }
 
 function normalizeImplicitInlineMath(source) {
@@ -303,6 +430,7 @@ async function refreshPreview() {
   const preview = document.getElementById('markdown-preview');
   if (!preview || !draft) return;
   const version = ++previewVersion;
+  renderOutline();
   if (viewMode === 'source') return;
   if (window.gitNoteBackend) {
     const staging=document.createElement('div');
@@ -313,6 +441,7 @@ async function refreshPreview() {
     });
     preview.replaceChildren(...staging.childNodes);
   } else preview.replaceChildren(...markdownFragment(draft.body).childNodes);
+  mapPreviewSource(preview, draft.body || '');
   if (window.gitNoteBackend) window.gitNoteBackend.resolveImages(preview).catch(error=>console.warn('Note image:',error));
   preview.querySelectorAll('img').forEach((image,index)=>{
     image.tabIndex=0; image.setAttribute('role','button'); image.title='点击调整大小与对齐';
@@ -353,21 +482,23 @@ function renderEditor() {
   if (!draft) {
     editor.innerHTML = `<div class="welcome"><div class="welcome-icon">✦</div><h2>让每个想法都有去处</h2><p>选一篇札记继续写，或新建笔记、想法与 Inbox。</p><button class="primary" id="welcome-new">新建札记</button></div>`;
     document.getElementById('welcome-new').onclick = newMenu;
+    renderOutline();
     return;
   }
   const editableTitle = !['paper','inbox'].includes(draft.kind);
-  editor.innerHTML = `<div class="editor-bar"><button class="mobile-back" id="back-btn">← 列表</button><div class="crumb">${labels[draft.kind]}${contextTitle(draft) ? ` · ${escapeHtml(contextTitle(draft))}` : ''}</div>
+  editor.innerHTML = `<div class="editor-bar"><button class="mobile-back" id="back-btn">← 列表</button><button class="mobile-back" id="outline-open-btn">☷ 目录</button><div class="crumb">${labels[draft.kind]}${contextTitle(draft) ? ` · ${escapeHtml(contextTitle(draft))}` : ''}</div>
     <div class="editor-actions"><button class="ghost" id="focus-btn" aria-pressed="${focusMode}" title="隐藏列表，专注编辑">${focusMode?'退出全屏':'全屏'}</button><button class="ghost" id="print-btn">导出 PDF</button><button class="ghost danger-text" id="delete-btn">删除</button><button class="primary small" id="save-btn">保存</button></div></div>
     <div class="document"><input id="title" class="title-input" placeholder="标题" value="${escapeHtml(draft.title)}" ${editableTitle?'':'readonly'}>
       <div class="metadata">${metaControls(draft)}${!['paper','inbox','project'].includes(draft.kind) ? `<label class="field compact">标签<input id="tags" value="${escapeHtml(draft.tags)}" placeholder="用逗号分隔"></label>` : ''}</div>
       <div class="modebar"><div class="segment">${['source','split','preview'].map((mode,i)=>`<button data-mode="${mode}" class="${viewMode===mode?'active':''}">${['源码','分栏','预览'][i]}</button>`).join('')}</div>
         <div class="image-entry"><span>可拖入或粘贴图片</span><label class="upload-button">插入图片<input type="file" id="image-file" accept="image/png,image/jpeg,image/gif,image/webp" hidden></label></div></div>
       <div class="markdown-layout ${viewMode}"><textarea id="markdown-source" spellcheck="false" placeholder="用 Markdown 记录你的想法…"></textarea><article class="markdown-preview" id="markdown-preview"></article></div>
-      <div class="document-foot">Markdown · Ctrl+S 保存 · 可粘贴图片</div></div>`;
+      <div class="document-foot">Markdown · Ctrl+S 保存 · 可粘贴图片 · 分栏时双击预览文字可定位源码</div></div>`;
   const source = document.getElementById('markdown-source');
   source.value = draft.body || '';
   source.oninput = () => { draft.body=source.value; setDirty(); clearTimeout(previewTimer); previewTimer=setTimeout(refreshPreview,220); };
   const layout = document.querySelector('.markdown-layout');
+  document.getElementById('markdown-preview').ondblclick = jumpFromPreview;
   layout.onpaste = async event => {
     const file = Array.from(event.clipboardData?.files || []).find(x => x.type.startsWith('image/'));
     if (file) { event.preventDefault(); await uploadImage(file); }
@@ -398,7 +529,8 @@ function renderEditor() {
   document.getElementById('delete-btn').onclick = remove;
   document.getElementById('print-btn').onclick = async () => { viewMode='preview'; document.querySelector('.markdown-layout').className='markdown-layout preview'; await refreshPreview(); if(window.gitNoteBackend) await window.gitNoteBackend.resolveImages(document.getElementById('markdown-preview')); window.print(); };
   document.getElementById('image-file').onchange = async event => { if (event.target.files[0]) await uploadImage(event.target.files[0]); event.target.value=''; };
-  document.getElementById('back-btn').onclick = () => { focusMode=false; document.querySelector('.workspace')?.classList.remove('focus-editor'); document.querySelector('.sidebar')?.classList.remove('mobile-hidden'); };
+  document.getElementById('back-btn').onclick = () => { focusMode=false; sidebarMode='list'; renderSidebarMode(); document.querySelector('.workspace')?.classList.remove('focus-editor'); document.querySelector('.sidebar')?.classList.remove('mobile-hidden'); };
+  document.getElementById('outline-open-btn').onclick = () => { focusMode=false; sidebarMode='outline'; renderSidebarMode(); document.querySelector('.workspace')?.classList.remove('focus-editor'); document.querySelector('.sidebar')?.classList.remove('mobile-hidden'); };
   refreshPreview();
 }
 
@@ -500,7 +632,7 @@ function create(kind, contextId) {
     kind==='inbox' ? {item_type:'note',processed:false,project_id:null} : {project_id:null};
   if (kind==='paper' && items.some(x=>x.kind==='paper' && x.meta.paper_id===contextId)) return toast('这篇文献已有笔记',true);
   draft={id:crypto.randomUUID(),kind,title:kind==='paper'?(contexts.paper.find(x=>x.local_id===contextId)?.title||'文献笔记'):'',body:'',tags:'',meta,revision:0,updated_at:Date.now()/1000};
-  viewMode = 'source';
+  viewMode = 'split';
   selected=draft.id; dirty=true; renderList(); renderEditor(); document.getElementById('save-state').textContent='未保存';
   document.querySelector('.sidebar')?.classList.add('mobile-hidden');
 }
